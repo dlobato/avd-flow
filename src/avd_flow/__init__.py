@@ -1,0 +1,1 @@
+"""AVD project lifecycle CLI."""

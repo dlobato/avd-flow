@@ -1,0 +1,16 @@
+---
+- name: Generate Arista EOS configurations
+  hosts: "{{ lookup('ansible.builtin.env', 'FABRIC_INVENTORY_GROUP', default='FABRIC') }}"
+  vars:
+    root_dir: "{{ lookup('ansible.builtin.env', 'BUILD_OUTPUT_DIR', default=inventory_dir) }}"
+  tasks:
+    - name: Generate intended variables
+      ansible.builtin.import_role:
+        name: arista.avd.eos_designs
+
+    - name: Generate device configurations and documentation
+      ansible.builtin.import_role:
+        name: arista.avd.eos_cli_config_gen
+      vars:
+        eos_cli_config_gen_configuration:
+          hide_passwords: "{{ lookup('ansible.builtin.env', 'SANITIZE', default=false) | bool }}"

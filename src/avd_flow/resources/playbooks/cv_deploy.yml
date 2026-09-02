@@ -1,0 +1,14 @@
+---
+- name: Configuration deployment
+  hosts: "{{ lookup('ansible.builtin.env', 'FABRIC_INVENTORY_GROUP', default='FABRIC') }}"
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Deploy configurations and tags to CloudVision
+      ansible.builtin.import_role:
+        name: arista.avd.cv_deploy
+      vars:
+        cv_verify_certs: "{{ lookup('ansible.builtin.env', 'CV_VERIFY_CERTS', default=true) | bool }}"
+        cv_workspace_name: "{{ lookup('ansible.builtin.env', 'WORKSPACE_NAME') }}"
+        cv_workspace_description: "{{ lookup('ansible.builtin.env', 'WORKSPACE_DESCRIPTION') }}"
+        cv_change_control_description: "{{ lookup('ansible.builtin.env', 'CHANGE_CONTROL_DESCRIPTION') }}"

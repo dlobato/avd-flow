@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=77", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "avd-flow"
+dynamic = ["version"]
+description = "Bootstrap and build Arista AVD inventory projects"
+requires-python = ">=3.11"
+
+[project.scripts]
+avd-flow = "avd_flow.cli:main"
+
+[dependency-groups]
+dev = ["mypy", "pre-commit", "ruff"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.package-data]
+"avd_flow.resources" = ["*", "playbooks/*"]
+
+[tool.setuptools_scm]

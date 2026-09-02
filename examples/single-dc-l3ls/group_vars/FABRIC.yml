@@ -1,0 +1,19 @@
+---
+fabric_name: FABRIC
+underlay_routing_protocol: ebgp
+overlay_routing_protocol: ebgp
+p2p_uplinks_mtu: 1500
+
+eos_designs_documentation:
+  topology_csv: true
+  p2p_links_csv: true
+
+default_interfaces:
+  - types: [spine]
+    platforms: [default]
+    uplink_interfaces: [Ethernet1-2]
+    downlink_interfaces: [Ethernet1-8]
+  - types: [l3leaf]
+    platforms: [default]
+    uplink_interfaces: [Ethernet1-2]
+    mlag_interfaces: [Ethernet3-4]

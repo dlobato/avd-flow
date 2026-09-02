@@ -1,0 +1,4 @@
+vars_plugins_enabled = arista.avd.global_vars, host_group_vars
+
+[vars_global_vars]
+paths = __GLOBAL_VARS_PATH__

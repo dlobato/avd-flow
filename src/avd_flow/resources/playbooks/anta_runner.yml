@@ -1,0 +1,21 @@
+---
+- name: Run ANTA
+  hosts: "{{ lookup('ansible.builtin.env', 'FABRIC_INVENTORY_GROUP', default='FABRIC') }}"
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run ANTA on EOS devices
+      ansible.builtin.import_role:
+        name: arista.avd.anta_runner
+      vars:
+        ansible_user: "{{ lookup('ansible.builtin.env', 'EAPI_USER', default=Undefined) }}"
+        ansible_httpapi_password: "{{ lookup('ansible.builtin.env', 'EAPI_PASSWORD', default=Undefined) }}"
+        ansible_become: true
+        ansible_become_method: enable
+        ansible_become_password: "{{ lookup('ansible.builtin.env', 'EAPI_ENABLE_PASSWORD', default=lookup('ansible.builtin.env', 'EAPI_PASSWORD')) }}"
+        ansible_network_os: eos
+        ansible_connection: httpapi
+        ansible_httpapi_use_ssl: true
+        ansible_httpapi_validate_certs: false
+        anta_report_expand_results: true
+        avd_catalogs_extra_fabric_validation: true
