@@ -5,7 +5,7 @@ Small Python CLI for bootstrapping and building Arista AVD inventory projects.
 ## Install from a private Git repository
 
 ```shell
-uv tool install 'git+ssh://git@GIT_HOST/GROUP/avd-flow.git'
+uv tool install 'git+ssh://git@github.com/dlobato/avd-flow.git'
 ```
 
 The SSH key and repository access remain managed by Git. Update from the same
