@@ -199,7 +199,7 @@ class BuildTest(unittest.TestCase):
                 str(root / ".env"),
                 build.args[0][build.args[0].index("--env-file") + 1],
             )
-            self.assertEqual(str(inventory), build.args[0][-1])
+            self.assertEqual(str(inventory.resolve()), build.args[0][-1])
             self.assertIn("--project", build.args[0])
             self.assertNotEqual(
                 root / "ansible.cfg", Path(build.kwargs["env"]["ANSIBLE_CONFIG"])

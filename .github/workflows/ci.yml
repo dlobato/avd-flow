@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          python-version: "3.11"
+      - run: uv sync --locked
+      - run: uv run python -m unittest discover -s tests -v
+
+  build-example:
+    name: Build example (AVD ${{ matrix.avd }}, ${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        avd: ["6.0.0", "6.0.1", "6.1.0", "6.2.0", "6.3.0", "6.4.0"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          python-version: "3.11"
+      - name: Install avd-flow
+        run: |
+          uv tool install .
+          uv tool dir --bin >> "$GITHUB_PATH"
+      - name: Build standalone
+        run: avd-flow build --sanitize --avd-version ${{ matrix.avd }} --inventory examples/single-dc-l3ls/inventory.yml
+        env:
+          BUILD_OUTPUT_DIR: ${{ github.workspace }}/standalone-build
+      - name: Initialize project
+        run: avd-flow init initialized-project --avd-version ${{ matrix.avd }}
+      - name: Add example inventory
+        run: cp -R examples/single-dc-l3ls/inventory.yml examples/single-dc-l3ls/group_vars initialized-project/inventory/
+      - name: Build initialized project
+        working-directory: initialized-project
+        run: avd-flow build --sanitize
+        env:
+          BUILD_OUTPUT_DIR: ${{ github.workspace }}/initialized-build
+      - name: Upload standalone configs
+        uses: actions/upload-artifact@v6
+        with:
+          name: standalone-configs-${{ matrix.os }}-avd-${{ matrix.avd }}
+          path: standalone-build/intended/configs/*.cfg
+          if-no-files-found: error
+      - name: Upload initialized-project configs
+        uses: actions/upload-artifact@v6
+        with:
+          name: initialized-configs-${{ matrix.os }}-avd-${{ matrix.avd }}
+          path: initialized-build/intended/configs/*.cfg
+          if-no-files-found: error
