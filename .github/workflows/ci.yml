@@ -37,11 +37,28 @@ jobs:
         with:
           enable-cache: true
           python-version: "3.11"
-      - run: uv run avd-flow build --sanitize --avd-version ${{ matrix.avd }} --inventory examples/single-dc-l3ls/inventory.yml
+      - name: Build standalone
+        run: uv run avd-flow build --sanitize --avd-version ${{ matrix.avd }} --inventory examples/single-dc-l3ls/inventory.yml
         env:
-          BUILD_OUTPUT_DIR: ${{ github.workspace }}/example-build
-      - uses: actions/upload-artifact@v6
+          BUILD_OUTPUT_DIR: ${{ github.workspace }}/standalone-build
+      - name: Initialize project
+        run: uv run avd-flow init initialized-project --avd-version ${{ matrix.avd }}
+      - name: Add example inventory
+        run: cp -R examples/single-dc-l3ls/inventory.yml examples/single-dc-l3ls/group_vars initialized-project/inventory/
+      - name: Build initialized project
+        working-directory: initialized-project
+        run: ../.venv/bin/avd-flow build --sanitize
+        env:
+          BUILD_OUTPUT_DIR: ${{ github.workspace }}/initialized-build
+      - name: Upload standalone configs
+        uses: actions/upload-artifact@v6
         with:
-          name: configs-${{ matrix.os }}-avd-${{ matrix.avd }}
-          path: example-build/intended/configs/*.cfg
+          name: standalone-configs-${{ matrix.os }}-avd-${{ matrix.avd }}
+          path: standalone-build/intended/configs/*.cfg
+          if-no-files-found: error
+      - name: Upload initialized-project configs
+        uses: actions/upload-artifact@v6
+        with:
+          name: initialized-configs-${{ matrix.os }}-avd-${{ matrix.avd }}
+          path: initialized-build/intended/configs/*.cfg
           if-no-files-found: error
