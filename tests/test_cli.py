@@ -14,6 +14,7 @@ from avd_flow.cli import (
     cv_deploy,
     init_project,
     main,
+    run,
 )
 
 
@@ -72,6 +73,61 @@ class InitTest(unittest.TestCase):
 
 
 class BuildTest(unittest.TestCase):
+    def test_ignores_an_unrequested_active_environment(self) -> None:
+        root = Path("/project")
+        with (
+            patch.dict(
+                os.environ,
+                {"VIRTUAL_ENV": "/another/project/.venv", "KEEP": "value"},
+                clear=True,
+            ),
+            patch("avd_flow.cli.subprocess.run") as subprocess_run,
+        ):
+            run(["uv", "sync"], root)
+
+        subprocess_run.assert_called_once_with(
+            ["uv", "sync"],
+            cwd=root,
+            check=True,
+            text=True,
+            env={"KEEP": "value"},
+        )
+
+    def test_uses_the_active_environment_when_requested(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inventory = root / "inventory" / "inventory.yml"
+            inventory.parent.mkdir()
+            inventory.touch()
+            results = [
+                CompletedProcess([], 0, ""),
+                CompletedProcess([], 0, "6.3.0\n"),
+                CompletedProcess([], 0, ""),
+                CompletedProcess([], 0, ""),
+            ]
+
+            with (
+                patch("avd_flow.cli.Path.cwd", return_value=root),
+                patch("avd_flow.cli.shutil.which", return_value="/usr/bin/uv"),
+                patch(
+                    "avd_flow.cli.subprocess.run", side_effect=results
+                ) as subprocess_run,
+                patch.dict(
+                    os.environ, {"VIRTUAL_ENV": "/another/project/.venv"}, clear=True
+                ),
+            ):
+                main(["build", "--active"])
+
+            self.assertTrue(
+                all(
+                    "--active" in item.args[0] for item in subprocess_run.call_args_list
+                )
+            )
+            self.assertEqual(
+                "/another/project/.venv",
+                subprocess_run.call_args_list[-1].kwargs["env"]["VIRTUAL_ENV"],
+            )
+
     def test_builds_with_required_collections(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -213,7 +269,9 @@ class DeployTest(unittest.TestCase):
         with patch("avd_flow.cli.run_playbook") as run_playbook:
             cv_deploy(inventory)
 
-        run_playbook.assert_called_once_with("playbooks/cv_deploy.yml", inventory)
+        run_playbook.assert_called_once_with(
+            "playbooks/cv_deploy.yml", inventory, active=False
+        )
 
 
 class AntaTest(unittest.TestCase):
@@ -222,7 +280,9 @@ class AntaTest(unittest.TestCase):
         with patch("avd_flow.cli.run_playbook") as run_playbook:
             anta(inventory)
 
-        run_playbook.assert_called_once_with("playbooks/anta_runner.yml", inventory)
+        run_playbook.assert_called_once_with(
+            "playbooks/anta_runner.yml", inventory, active=False
+        )
 
 
 if __name__ == "__main__":
