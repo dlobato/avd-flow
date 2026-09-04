@@ -40,6 +40,8 @@ avd-flow build
 
 Use `avd-flow build --sanitize` to hide passwords in generated configurations,
 or `--inventory PATH` to select a different inventory file.
+By default, commands ignore an unrelated active virtual environment and use the
+project's `.venv`. Pass `--active` to `build`, `cv-deploy`, or `anta` to use it.
 
 Build an inventory without initializing a project by selecting the AVD version:
 

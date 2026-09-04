@@ -23,6 +23,28 @@ jobs:
       - run: uv sync --locked
       - run: uv run python -m unittest discover -s tests -v
 
+  active-environment:
+    name: Build with active environment
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          python-version: "3.11"
+      - name: Install avd-flow
+        run: |
+          uv tool install .
+          uv tool dir --bin >> "$GITHUB_PATH"
+      - run: uv venv active-venv
+      - name: Build standalone
+        run: avd-flow build --active --sanitize --avd-version 6.4.0 --inventory examples/single-dc-l3ls/inventory.yml
+        env:
+          BUILD_OUTPUT_DIR: ${{ runner.temp }}/active-build
+          VIRTUAL_ENV: ${{ github.workspace }}/active-venv
+      - name: Verify active environment
+        run: active-venv/bin/python -c 'from importlib.metadata import version; assert version("pyavd") == "6.4.0"'
+
   build-example:
     name: Build example (AVD ${{ matrix.avd }}, ${{ matrix.os }})
     strategy:

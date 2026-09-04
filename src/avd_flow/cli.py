@@ -72,12 +72,18 @@ def init_project(
 
 
 def run(
-    command: list[str], root: Path, **kwargs: Any
+    command: list[str], root: Path, active: bool = False, **kwargs: Any
 ) -> subprocess.CompletedProcess[str]:
+    environment = kwargs.get("env", os.environ)
+    if not active and "VIRTUAL_ENV" in environment:
+        kwargs["env"] = environment.copy()
+        kwargs["env"].pop("VIRTUAL_ENV")
     return subprocess.run(command, cwd=root, check=True, text=True, **kwargs)
 
 
-def prepare_project(inventory_path: Path, root: Path | None = None) -> tuple[Path, str]:
+def prepare_project(
+    inventory_path: Path, root: Path | None = None, active: bool = False
+) -> tuple[Path, str]:
     root = root or Path.cwd()
     inventory = root / inventory_path
     if not inventory.is_file():
@@ -89,22 +95,26 @@ def prepare_project(inventory_path: Path, root: Path | None = None) -> tuple[Pat
             "uv is required: https://docs.astral.sh/uv/getting-started/installation/"
         )
 
-    run([uv, "sync"], root)
+    active_argument = ["--active"] if active else []
+    run([uv, "sync", *active_argument], root, active=active)
     installed_version = run(
         [
             uv,
             "run",
+            *active_argument,
             "python",
             "-c",
             'from importlib.metadata import version; print(version("pyavd").replace(".dev", "-dev"))',
         ],
         root,
+        active=active,
         stdout=subprocess.PIPE,
     ).stdout.strip()
     run(
         [
             uv,
             "run",
+            *active_argument,
             "ansible-galaxy",
             "collection",
             "install",
@@ -114,12 +124,14 @@ def prepare_project(inventory_path: Path, root: Path | None = None) -> tuple[Pat
             ".ansible/collections",
         ],
         root,
+        active=active,
     )
     if (root / "collection-requirements.yml").is_file():
         run(
             [
                 uv,
                 "run",
+                *active_argument,
                 "ansible-galaxy",
                 "collection",
                 "install",
@@ -129,6 +141,7 @@ def prepare_project(inventory_path: Path, root: Path | None = None) -> tuple[Pat
                 ".ansible/collections",
             ],
             root,
+            active=active,
         )
 
     return root, uv
@@ -141,8 +154,9 @@ def run_playbook(
     root: Path | None = None,
     env_file: Path | None = None,
     working_directory: Path | None = None,
+    active: bool = False,
 ) -> None:
-    root, uv = prepare_project(inventory_path, root)
+    root, uv = prepare_project(inventory_path, root, active)
     working_directory = working_directory or root
     env_file_argument = str(env_file) if env_file is not None else ".env"
     env_file = env_file or root / ".env"
@@ -155,6 +169,7 @@ def run_playbook(
         [
             uv,
             "run",
+            *(["--active"] if active else []),
             *(["--project", str(root)] if standalone else []),
             *(["--env-file", env_file_argument] if env_file.is_file() else []),
             "ansible-playbook",
@@ -163,6 +178,7 @@ def run_playbook(
             str(inventory_path),
         ],
         working_directory,
+        active=active,
         env=environment,
     )
 
@@ -172,12 +188,15 @@ def build_project(
     sanitize: bool = False,
     avd_version: str | None = None,
     global_vars_path: Path | None = None,
+    active: bool = False,
 ) -> None:
     environment = {"SANITIZE": "true"} if sanitize else None
     if avd_version is None:
         if global_vars_path is not None:
             raise CliError("--global-vars requires --avd-version")
-        run_playbook("playbooks/fabric-build.yml", inventory_path, environment)
+        run_playbook(
+            "playbooks/fabric-build.yml", inventory_path, environment, active=active
+        )
         return
 
     source_root = Path.cwd()
@@ -197,19 +216,22 @@ def build_project(
             root,
             source_root / ".env",
             source_root,
+            active=active,
         )
 
 
 def cv_deploy(
     inventory_path: Path = Path("inventory/inventory.yml"),
+    active: bool = False,
 ) -> None:
-    run_playbook("playbooks/cv_deploy.yml", inventory_path)
+    run_playbook("playbooks/cv_deploy.yml", inventory_path, active=active)
 
 
 def anta(
     inventory_path: Path = Path("inventory/inventory.yml"),
+    active: bool = False,
 ) -> None:
-    run_playbook("playbooks/anta_runner.yml", inventory_path)
+    run_playbook("playbooks/anta_runner.yml", inventory_path, active=active)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -242,6 +264,9 @@ def parser() -> argparse.ArgumentParser:
             default=Path("inventory/inventory.yml"),
             metavar="PATH",
             help="inventory file",
+        )
+        command.add_argument(
+            "--active", action="store_true", help="use the active virtual environment"
         )
 
     build = commands.add_parser("build", help="build device configurations")
