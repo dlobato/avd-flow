@@ -21,7 +21,7 @@ from avd_flow.cli import (
 class InitTest(unittest.TestCase):
     def test_creates_project_with_empty_inventory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "fabric"
+            root = Path(directory) / "My Fabric"
             output = io.StringIO()
 
             with redirect_stdout(output):
@@ -30,6 +30,7 @@ class InitTest(unittest.TestCase):
             self.assertIn(
                 '"pyavd[ansible]==6.3.0"', (root / "pyproject.toml").read_text()
             )
+            self.assertIn('name = "my-fabric"', (root / "pyproject.toml").read_text())
             self.assertIn(
                 "community.general", (root / "collection-requirements.yml").read_text()
             )

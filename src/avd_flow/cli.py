@@ -42,6 +42,10 @@ def init_project(
         raise CliError("global vars path must not contain newlines")
 
     root = path or Path.cwd()
+    project_name = (
+        re.sub(r"[^a-z0-9]+", "-", root.absolute().name.lower()).strip("-")
+        or "avd-project"
+    )
     resource_root = files("avd_flow.resources")
     project_files = {
         root / destination: resource_root.joinpath(*source.split("/"))
@@ -53,7 +57,11 @@ def init_project(
 
     for output_path, resource in project_files.items():
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        content = resource.read_text().replace("__AVD_VERSION__", avd_version)
+        content = (
+            resource.read_text()
+            .replace("__AVD_VERSION__", avd_version)
+            .replace("__PROJECT_NAME__", project_name)
+        )
         if output_path.name == "ansible.cfg":
             global_vars_config = ""
             if global_vars is not None:
