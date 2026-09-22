@@ -364,6 +364,14 @@ def cv_deploy(
     )
 
 
+def cv_validate(
+    inventory_path: Path = Path("inventory/inventory.yml"),
+    active: bool = False,
+    vault_id: str | None = None,
+) -> None:
+    run_playbook("cv_validate.yml", inventory_path, active=active, vault_id=vault_id)
+
+
 def eapi_deploy(
     inventory_path: Path = Path("inventory/inventory.yml"),
     active: bool = False,
@@ -448,6 +456,12 @@ def parser() -> argparse.ArgumentParser:
         "--digital-twin", action="store_true", help="deploy digital-twin artifacts"
     )
     deploy.set_defaults(func=cv_deploy)
+
+    validate = commands.add_parser(
+        "cv-validate", help="validate configurations in CloudVision"
+    )
+    add_inventory(validate)
+    validate.set_defaults(func=cv_validate)
 
     eapi = commands.add_parser("eapi-deploy", help="deploy configurations over eAPI")
     add_inventory(eapi)

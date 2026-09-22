@@ -12,6 +12,7 @@ from avd_flow.cli import (
     anta,
     build_project,
     cv_deploy,
+    cv_validate,
     eapi_deploy,
     main,
     prepare,
@@ -359,6 +360,18 @@ class DeployTest(unittest.TestCase):
 
         run_playbook.assert_called_once_with(
             "cv_deploy_digital_twin.yml",
+            inventory,
+            active=False,
+            vault_id="default@password",
+        )
+
+    def test_runs_cv_validate_playbook(self) -> None:
+        inventory = Path("inventory/inventory.yml")
+        with patch("avd_flow.cli.run_playbook") as run_playbook:
+            cv_validate(inventory, vault_id="default@password")
+
+        run_playbook.assert_called_once_with(
+            "cv_validate.yml",
             inventory,
             active=False,
             vault_id="default@password",
