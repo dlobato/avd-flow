@@ -5,15 +5,17 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from subprocess import CompletedProcess
-from unittest.mock import call, patch
+from unittest.mock import patch
 
 from avd_flow.cli import (
     INVENTORY_MESSAGE,
     anta,
     build_project,
     cv_deploy,
-    init_project,
+    cv_validate,
+    eapi_deploy,
     main,
+    prepare,
     run,
 )
 
@@ -34,29 +36,10 @@ class InitTest(unittest.TestCase):
             self.assertIn(
                 "community.general", (root / "collection-requirements.yml").read_text()
             )
-            self.assertIn(
-                "callbacks_enabled = profile_roles, profile_tasks, timer",
-                (root / "ansible.cfg").read_text(),
-            )
-            self.assertNotIn("global_vars", (root / "ansible.cfg").read_text())
-            self.assertTrue((root / "playbooks" / "cv_deploy.yml").is_file())
-            self.assertTrue((root / "playbooks" / "anta_runner.yml").is_file())
+            self.assertFalse((root / "ansible.cfg").exists())
+            self.assertFalse((root / "playbooks").exists())
             self.assertEqual([], list((root / "inventory").iterdir()))
             self.assertIn(INVENTORY_MESSAGE, output.getvalue())
-
-    def test_enables_global_vars_with_path(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "fabric"
-
-            init_project(
-                path=root, avd_version="6.3.0", global_vars_path=Path("../global_vars")
-            )
-
-            config = (root / "ansible.cfg").read_text()
-            self.assertIn(
-                "vars_plugins_enabled = arista.avd.global_vars, host_group_vars", config
-            )
-            self.assertIn("paths = ../global_vars", config)
 
     def test_force_reinitializes_without_removing_inventory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -100,6 +83,9 @@ class BuildTest(unittest.TestCase):
             inventory = root / "inventory" / "inventory.yml"
             inventory.parent.mkdir()
             inventory.touch()
+            (root / "pyproject.toml").write_text(
+                '[project]\ndependencies = ["pyavd[ansible]==6.3.0"]\n'
+            )
             results = [
                 CompletedProcess([], 0, ""),
                 CompletedProcess([], 0, "6.3.0\n"),
@@ -135,6 +121,9 @@ class BuildTest(unittest.TestCase):
             inventory = root / "inventory" / "inventory.yml"
             inventory.parent.mkdir()
             inventory.touch()
+            (root / "pyproject.toml").write_text(
+                '[project]\ndependencies = ["pyavd[ansible]==6.3.0"]\n'
+            )
             (root / "collection-requirements.yml").touch()
             (root / ".env").write_text("FROM_DOTENV=loaded\nEXISTING_VALUE=from-file\n")
             results = [
@@ -158,43 +147,34 @@ class BuildTest(unittest.TestCase):
                 )
 
             self.assertEqual(
-                call(
-                    [
-                        "/usr/bin/uv",
-                        "run",
-                        "ansible-galaxy",
-                        "collection",
-                        "install",
-                        "arista.avd:==6.3.0",
-                        "ansible.posix",
-                        "--collections-path",
-                        ".ansible/collections",
-                    ],
-                    cwd=root,
-                    check=True,
-                    text=True,
-                ),
-                run.call_args_list[2],
+                [
+                    "/usr/bin/uv",
+                    "run",
+                    "ansible-galaxy",
+                    "collection",
+                    "install",
+                    "arista.avd:==6.3.0",
+                    "ansible.posix",
+                    "--collections-path",
+                    ".ansible/collections",
+                ],
+                run.call_args_list[2].args[0],
             )
             self.assertEqual(
-                call(
-                    [
-                        "/usr/bin/uv",
-                        "run",
-                        "ansible-galaxy",
-                        "collection",
-                        "install",
-                        "--requirements-file",
-                        "collection-requirements.yml",
-                        "--collections-path",
-                        ".ansible/collections",
-                    ],
-                    cwd=root,
-                    check=True,
-                    text=True,
-                ),
-                run.call_args_list[3],
+                [
+                    "/usr/bin/uv",
+                    "run",
+                    "ansible-galaxy",
+                    "collection",
+                    "install",
+                    "--requirements-file",
+                    "collection-requirements.yml",
+                    "--collections-path",
+                    ".ansible/collections",
+                ],
+                run.call_args_list[3].args[0],
             )
+            self.assertIn("ANSIBLE_LOCAL_TEMP", run.call_args_list[2].kwargs["env"])
             environment = run.call_args_list[4].kwargs["env"]
             self.assertEqual(
                 ["/usr/bin/uv", "run", "--env-file", ".env"],
@@ -202,6 +182,10 @@ class BuildTest(unittest.TestCase):
             )
             self.assertEqual("from-environment", environment["EXISTING_VALUE"])
             self.assertEqual("true", environment["SANITIZE"])
+            self.assertEqual(
+                "fabric-build.yml", Path(run.call_args_list[4].args[0][-3]).name
+            )
+            self.assertIn("ANSIBLE_CONFIG", environment)
 
     def test_skips_missing_collection_requirements(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -209,6 +193,9 @@ class BuildTest(unittest.TestCase):
             inventory = root / "inventory" / "inventory.yml"
             inventory.parent.mkdir()
             inventory.touch()
+            (root / "pyproject.toml").write_text(
+                '[project]\ndependencies = ["pyavd[ansible]==6.3.0"]\n'
+            )
             results = [
                 CompletedProcess([], 0, ""),
                 CompletedProcess([], 0, "6.3.0\n"),
@@ -263,6 +250,98 @@ class BuildTest(unittest.TestCase):
             )
             self.assertFalse((root / "pyproject.toml").exists())
 
+    def test_reuses_a_prepared_active_environment_without_syncing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inventory = root / "inventory" / "inventory.yml"
+            inventory.parent.mkdir()
+            inventory.touch()
+            (root / "pyproject.toml").write_text(
+                '[project]\ndependencies = ["pyavd[ansible]==6.3.0"]\n'
+            )
+            virtual_environment = root / "prepared"
+            python = virtual_environment / "bin" / "python"
+            python.parent.mkdir(parents=True)
+            python.touch()
+            results = [
+                CompletedProcess([], 0, "6.3.0\n"),
+                CompletedProcess(
+                    [],
+                    0,
+                    '{"/usr/share/ansible/collections": '
+                    '{"arista.avd": {"version": "6.3.0"}}}\n',
+                ),
+                CompletedProcess([], 0, ""),
+            ]
+
+            with (
+                patch("avd_flow.cli.Path.cwd", return_value=root),
+                patch("avd_flow.cli.shutil.which", return_value="/usr/bin/uv"),
+                patch("avd_flow.cli.subprocess.run", side_effect=results) as run,
+                patch.dict(
+                    os.environ,
+                    {
+                        "AVD_FLOW_ENVIRONMENT": "prepared",
+                        "VIRTUAL_ENV": str(virtual_environment),
+                    },
+                    clear=True,
+                ),
+            ):
+                build_project()
+
+            self.assertEqual(3, run.call_count)
+            self.assertTrue(
+                all(
+                    call.args[0][:4] == ["/usr/bin/uv", "run", "--active", "--no-sync"]
+                    for call in run.call_args_list
+                )
+            )
+            self.assertFalse(
+                any(call.args[0][1] == "sync" for call in run.call_args_list)
+            )
+
+
+class PrepareTest(unittest.TestCase):
+    def test_installs_collections_without_syncing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "pyproject.toml").write_text(
+                '[project]\ndependencies = ["pyavd[ansible]==6.3.0"]\n'
+            )
+            results = [
+                CompletedProcess([], 0, "6.3.0\n"),
+                CompletedProcess([], 0, ""),
+            ]
+
+            with (
+                patch("avd_flow.cli.Path.cwd", return_value=root),
+                patch("avd_flow.cli.shutil.which", return_value="/usr/bin/uv"),
+                patch("avd_flow.cli.subprocess.run", side_effect=results) as run,
+            ):
+                prepare(no_sync=True)
+
+            self.assertEqual(2, run.call_count)
+            self.assertFalse(
+                any(call.args[0][1] == "sync" for call in run.call_args_list)
+            )
+
+
+class DirectoryTest(unittest.TestCase):
+    def test_runs_from_selected_directory_and_restores_cwd(self) -> None:
+        original = Path.cwd()
+        with tempfile.TemporaryDirectory() as directory:
+            selected = Path(directory)
+            visited: list[Path] = []
+
+            with patch(
+                "avd_flow.cli.build_project",
+                side_effect=lambda **kwargs: visited.append(Path.cwd()),
+            ):
+                main(["-C", str(selected), "build"])
+
+        self.assertEqual([selected], visited)
+        self.assertEqual(original, Path.cwd())
+
 
 class DeployTest(unittest.TestCase):
     def test_runs_cv_deploy_playbook(self) -> None:
@@ -271,7 +350,40 @@ class DeployTest(unittest.TestCase):
             cv_deploy(inventory)
 
         run_playbook.assert_called_once_with(
-            "playbooks/cv_deploy.yml", inventory, active=False
+            "cv_deploy.yml", inventory, active=False, vault_id=None
+        )
+
+    def test_runs_digital_twin_cv_deploy_playbook(self) -> None:
+        inventory = Path("inventory/inventory.yml")
+        with patch("avd_flow.cli.run_playbook") as run_playbook:
+            cv_deploy(inventory, digital_twin=True, vault_id="default@password")
+
+        run_playbook.assert_called_once_with(
+            "cv_deploy_digital_twin.yml",
+            inventory,
+            active=False,
+            vault_id="default@password",
+        )
+
+    def test_runs_cv_validate_playbook(self) -> None:
+        inventory = Path("inventory/inventory.yml")
+        with patch("avd_flow.cli.run_playbook") as run_playbook:
+            cv_validate(inventory, vault_id="default@password")
+
+        run_playbook.assert_called_once_with(
+            "cv_validate.yml",
+            inventory,
+            active=False,
+            vault_id="default@password",
+        )
+
+    def test_runs_eapi_deploy_playbook(self) -> None:
+        inventory = Path("inventory/inventory.yml")
+        with patch("avd_flow.cli.run_playbook") as run_playbook:
+            eapi_deploy(inventory)
+
+        run_playbook.assert_called_once_with(
+            "eapi_deploy.yml", inventory, active=False, vault_id=None
         )
 
 
@@ -282,7 +394,19 @@ class AntaTest(unittest.TestCase):
             anta(inventory)
 
         run_playbook.assert_called_once_with(
-            "playbooks/anta_runner.yml", inventory, active=False
+            "anta_runner.yml", inventory, active=False, vault_id=None
+        )
+
+    def test_runs_digital_twin_anta_playbook(self) -> None:
+        inventory = Path("inventory/inventory.yml")
+        with patch("avd_flow.cli.run_playbook") as run_playbook:
+            anta(inventory, digital_twin=True)
+
+        run_playbook.assert_called_once_with(
+            "anta_runner_digital_twin.yml",
+            inventory,
+            active=False,
+            vault_id=None,
         )
 
 
