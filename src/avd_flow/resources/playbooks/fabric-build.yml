@@ -7,6 +7,11 @@
     - name: Generate intended variables
       ansible.builtin.import_role:
         name: arista.avd.eos_designs
+      vars:
+        eos_designs_documentation:
+          topology_csv: true
+          p2p_links_csv: true
+          connected_endpoints: true
 
     - name: Generate device configurations and documentation
       ansible.builtin.import_role:

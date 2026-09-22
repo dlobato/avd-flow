@@ -1,0 +1,15 @@
+---
+- name: Generate Arista EOS configurations for a digital twin
+  hosts: "{{ lookup('ansible.builtin.env', 'FABRIC_INVENTORY_GROUP', default='FABRIC') }}"
+  vars:
+    output_dir_name: digital_twin/intended
+    documentation_dir_name: digital_twin/documentation
+    avd_digital_twin_mode: true
+  tasks:
+    - name: Generate intended variables
+      ansible.builtin.import_role:
+        name: arista.avd.eos_designs
+
+    - name: Generate device configurations and documentation
+      ansible.builtin.import_role:
+        name: arista.avd.eos_cli_config_gen

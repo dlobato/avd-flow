@@ -1,11 +1,13 @@
 import argparse
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
-from importlib.resources import files
+import tomllib
+from importlib.resources import as_file, files
 from pathlib import Path
 from typing import Any
 
@@ -16,12 +18,9 @@ INVENTORY_MESSAGE = (
 RESOURCE_FILES = {
     "pyproject.toml.template": "pyproject.toml",
     "collection-requirements.yml": "collection-requirements.yml",
-    "ansible.cfg": "ansible.cfg",
-    "playbooks/fabric-build.yml": "playbooks/fabric-build.yml",
-    "playbooks/cv_deploy.yml": "playbooks/cv_deploy.yml",
-    "playbooks/anta_runner.yml": "playbooks/anta_runner.yml",
     "gitignore": ".gitignore",
 }
+ENVIRONMENT_MODE = "AVD_FLOW_ENVIRONMENT"
 
 
 class CliError(Exception):
@@ -31,15 +30,11 @@ class CliError(Exception):
 def init_project(
     avd_version: str,
     path: Path | None = None,
-    global_vars_path: Path | None = None,
     force: bool = False,
     quiet: bool = False,
 ) -> None:
     if not VERSION_PATTERN.fullmatch(avd_version):
         raise CliError(f"invalid AVD version: {avd_version!r}")
-    global_vars = str(global_vars_path) if global_vars_path is not None else None
-    if global_vars is not None and ("\n" in global_vars or "\r" in global_vars):
-        raise CliError("global vars path must not contain newlines")
 
     root = path or Path.cwd()
     project_name = (
@@ -62,15 +57,6 @@ def init_project(
             .replace("__AVD_VERSION__", avd_version)
             .replace("__PROJECT_NAME__", project_name)
         )
-        if output_path.name == "ansible.cfg":
-            global_vars_config = ""
-            if global_vars is not None:
-                global_vars_config = (
-                    resource_root.joinpath("global-vars.cfg.template")
-                    .read_text()
-                    .replace("__GLOBAL_VARS_PATH__", global_vars)
-                )
-            content = content.replace("__GLOBAL_VARS_CONFIG__", global_vars_config)
         output_path.write_text(content)
     (root / "inventory").mkdir(parents=True, exist_ok=True)
 
@@ -89,9 +75,30 @@ def run(
     return subprocess.run(command, cwd=root, check=True, text=True, **kwargs)
 
 
+def read_project(root: Path) -> dict[str, Any]:
+    pyproject = root / "pyproject.toml"
+    if not pyproject.is_file():
+        raise CliError(f"{pyproject} not found")
+    try:
+        return tomllib.loads(pyproject.read_text())
+    except tomllib.TOMLDecodeError as error:
+        raise CliError(f"invalid {pyproject}: {error}") from error
+
+
+def declared_pyavd_version(root: Path) -> str:
+    dependencies = read_project(root).get("project", {}).get("dependencies", [])
+    for dependency in dependencies:
+        match = re.fullmatch(
+            r"pyavd(?:\[[^]]+\])?\s*==\s*([^\s;]+)", dependency, re.IGNORECASE
+        )
+        if match:
+            return match.group(1).replace(".dev", "-dev")
+    raise CliError(f"{root / 'pyproject.toml'} must pin pyavd with ==")
+
+
 def prepare_project(
     inventory_path: Path, root: Path | None = None, active: bool = False
-) -> tuple[Path, str]:
+) -> tuple[Path, str, bool, bool, str]:
     root = root or Path.cwd()
     inventory = root / inventory_path
     if not inventory.is_file():
@@ -103,13 +110,28 @@ def prepare_project(
             "uv is required: https://docs.astral.sh/uv/getting-started/installation/"
         )
 
+    mode = os.environ.get(ENVIRONMENT_MODE, "")
+    if mode not in {"", "prepared"}:
+        raise CliError(f"{ENVIRONMENT_MODE} must be 'prepared' or unset")
+    prepared = mode == "prepared"
+    active = active or prepared
+    if prepared:
+        virtual_environment = os.environ.get("VIRTUAL_ENV")
+        if not virtual_environment:
+            raise CliError(f"{ENVIRONMENT_MODE}=prepared requires VIRTUAL_ENV")
+        if not (Path(virtual_environment) / "bin" / "python").is_file():
+            raise CliError(f"VIRTUAL_ENV is not usable: {virtual_environment}")
+
     active_argument = ["--active"] if active else []
-    run([uv, "sync", *active_argument], root, active=active)
+    no_sync_argument = ["--no-sync"] if prepared else []
+    if not prepared:
+        run([uv, "sync", *active_argument], root, active=active)
     installed_version = run(
         [
             uv,
             "run",
             *active_argument,
+            *no_sync_argument,
             "python",
             "-c",
             'from importlib.metadata import version; print(version("pyavd").replace(".dev", "-dev"))',
@@ -118,23 +140,20 @@ def prepare_project(
         active=active,
         stdout=subprocess.PIPE,
     ).stdout.strip()
-    run(
-        [
-            uv,
-            "run",
-            *active_argument,
-            "ansible-galaxy",
-            "collection",
-            "install",
-            f"arista.avd:=={installed_version}",
-            "ansible.posix",
-            "--collections-path",
-            ".ansible/collections",
-        ],
-        root,
-        active=active,
-    )
-    if (root / "collection-requirements.yml").is_file():
+    if prepared:
+        expected_version = declared_pyavd_version(root)
+        if installed_version != expected_version:
+            raise CliError(
+                f"prepared environment has pyavd {installed_version}; "
+                f"project requires {expected_version}"
+            )
+        return root, uv, active, prepared, installed_version
+
+    with tempfile.TemporaryDirectory(prefix="avd-flow-galaxy-") as directory:
+        galaxy_environment = {
+            **os.environ,
+            "ANSIBLE_LOCAL_TEMP": directory,
+        }
         run(
             [
                 uv,
@@ -143,16 +162,75 @@ def prepare_project(
                 "ansible-galaxy",
                 "collection",
                 "install",
-                "--requirements-file",
-                "collection-requirements.yml",
+                f"arista.avd:=={installed_version}",
+                "ansible.posix",
                 "--collections-path",
                 ".ansible/collections",
             ],
             root,
             active=active,
+            env=galaxy_environment,
         )
+        if (root / "collection-requirements.yml").is_file():
+            run(
+                [
+                    uv,
+                    "run",
+                    *active_argument,
+                    "ansible-galaxy",
+                    "collection",
+                    "install",
+                    "--requirements-file",
+                    "collection-requirements.yml",
+                    "--collections-path",
+                    ".ansible/collections",
+                ],
+                root,
+                active=active,
+                env=galaxy_environment,
+            )
 
-    return root, uv
+    return root, uv, active, prepared, installed_version
+
+
+def verify_prepared_collection(
+    uv: str,
+    root: Path,
+    version: str,
+    environment: dict[str, str],
+) -> None:
+    output = run(
+        [
+            uv,
+            "run",
+            "--active",
+            "--no-sync",
+            "ansible-galaxy",
+            "collection",
+            "list",
+            "arista.avd",
+            "--format",
+            "json",
+        ],
+        root,
+        active=True,
+        env=environment,
+        stdout=subprocess.PIPE,
+    ).stdout
+    try:
+        collections = json.loads(output)
+        versions = {
+            collection["version"]
+            for path in collections.values()
+            for name, collection in path.items()
+            if name == "arista.avd"
+        }
+    except (json.JSONDecodeError, AttributeError, KeyError, TypeError) as error:
+        raise CliError(
+            "could not inspect the prepared arista.avd collection"
+        ) from error
+    if version not in versions:
+        raise CliError(f"prepared environment does not contain arista.avd {version}")
 
 
 def run_playbook(
@@ -163,83 +241,138 @@ def run_playbook(
     env_file: Path | None = None,
     working_directory: Path | None = None,
     active: bool = False,
+    vault_id: str | None = None,
 ) -> None:
-    root, uv = prepare_project(inventory_path, root, active)
+    root, uv, active, prepared, installed_version = prepare_project(
+        inventory_path, root, active
+    )
     working_directory = working_directory or root
     env_file_argument = str(env_file) if env_file is not None else ".env"
     env_file = env_file or root / ".env"
-    standalone = working_directory != root
     environment = {**os.environ, **(environment_overrides or {})}
-    if standalone:
-        environment["ANSIBLE_CONFIG"] = str(root / "ansible.cfg")
+    with tempfile.TemporaryDirectory(prefix="avd-flow-ansible-") as directory:
+        runtime = Path(directory)
+        collection_paths = [root / ".ansible" / "collections"]
+        collection_paths.extend(
+            Path(path)
+            for path in environment.get(
+                "ANSIBLE_COLLECTIONS_PATH", "/usr/share/ansible/collections"
+            ).split(os.pathsep)
+            if path
+        )
+        environment["ANSIBLE_COLLECTIONS_PATH"] = os.pathsep.join(
+            map(str, collection_paths)
+        )
+        if "ANSIBLE_CONFIG" not in environment:
+            config = files("avd_flow.resources").joinpath("ansible.cfg").read_text()
+            config = config.replace(
+                "__COLLECTIONS_PATH__", environment["ANSIBLE_COLLECTIONS_PATH"]
+            )
+            config_path = runtime / "ansible.cfg"
+            config_path.write_text(config)
+            environment["ANSIBLE_CONFIG"] = str(config_path)
+        environment["ANSIBLE_LOCAL_TEMP"] = str(runtime / "local")
+        environment["ANSIBLE_REMOTE_TEMP"] = str(runtime / "remote")
+        (runtime / "local").mkdir()
+        (runtime / "remote").mkdir()
 
-    run(
-        [
-            uv,
-            "run",
-            *(["--active"] if active else []),
-            *(["--project", str(root)] if standalone else []),
-            *(["--env-file", env_file_argument] if env_file.is_file() else []),
-            "ansible-playbook",
-            str(root / playbook) if standalone else playbook,
-            "--inventory",
-            str(inventory_path),
-        ],
-        working_directory,
-        active=active,
-        env=environment,
-    )
+        if prepared:
+            verify_prepared_collection(
+                uv, working_directory, installed_version, environment
+            )
+
+        resource = files("avd_flow.resources").joinpath("playbooks", playbook)
+        with as_file(resource) as playbook_path:
+            run(
+                [
+                    uv,
+                    "run",
+                    *(["--active"] if active else []),
+                    *(["--no-sync"] if prepared else []),
+                    *(["--project", str(root)] if working_directory != root else []),
+                    *(["--env-file", env_file_argument] if env_file.is_file() else []),
+                    "ansible-playbook",
+                    str(playbook_path),
+                    "--inventory",
+                    str(inventory_path),
+                    *(["--vault-id", vault_id] if vault_id else []),
+                ],
+                working_directory,
+                active=active,
+                env=environment,
+            )
 
 
 def build_project(
     inventory_path: Path = Path("inventory/inventory.yml"),
     sanitize: bool = False,
     avd_version: str | None = None,
-    global_vars_path: Path | None = None,
     active: bool = False,
+    digital_twin: bool = False,
+    vault_id: str | None = None,
 ) -> None:
     environment = {"SANITIZE": "true"} if sanitize else None
     if avd_version is None:
-        if global_vars_path is not None:
-            raise CliError("--global-vars requires --avd-version")
         run_playbook(
-            "playbooks/fabric-build.yml", inventory_path, environment, active=active
+            "fabric-build-digital-twin.yml" if digital_twin else "fabric-build.yml",
+            inventory_path,
+            environment,
+            active=active,
+            vault_id=vault_id,
         )
         return
 
     source_root = Path.cwd()
     inventory_path = (source_root / inventory_path).resolve()
-    global_vars_path = (
-        (source_root / global_vars_path).resolve()
-        if global_vars_path is not None
-        else None
-    )
     with tempfile.TemporaryDirectory(prefix="avd-flow-") as directory:
         root = Path(directory)
-        init_project(avd_version, root, global_vars_path, quiet=True)
+        init_project(avd_version, root, quiet=True)
         run_playbook(
-            "playbooks/fabric-build.yml",
+            "fabric-build-digital-twin.yml" if digital_twin else "fabric-build.yml",
             inventory_path,
             environment,
             root,
             source_root / ".env",
             source_root,
             active=active,
+            vault_id=vault_id,
         )
 
 
 def cv_deploy(
     inventory_path: Path = Path("inventory/inventory.yml"),
     active: bool = False,
+    digital_twin: bool = False,
+    vault_id: str | None = None,
 ) -> None:
-    run_playbook("playbooks/cv_deploy.yml", inventory_path, active=active)
+    run_playbook(
+        "cv_deploy_digital_twin.yml" if digital_twin else "cv_deploy.yml",
+        inventory_path,
+        active=active,
+        vault_id=vault_id,
+    )
+
+
+def eapi_deploy(
+    inventory_path: Path = Path("inventory/inventory.yml"),
+    active: bool = False,
+    vault_id: str | None = None,
+) -> None:
+    run_playbook("eapi_deploy.yml", inventory_path, active=active, vault_id=vault_id)
 
 
 def anta(
     inventory_path: Path = Path("inventory/inventory.yml"),
     active: bool = False,
+    digital_twin: bool = False,
+    vault_id: str | None = None,
 ) -> None:
-    run_playbook("playbooks/anta_runner.yml", inventory_path, active=active)
+    run_playbook(
+        "anta_runner_digital_twin.yml" if digital_twin else "anta_runner.yml",
+        inventory_path,
+        active=active,
+        vault_id=vault_id,
+    )
 
 
 def parser() -> argparse.ArgumentParser:
@@ -255,13 +388,6 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument(
         "--force", action="store_true", help="overwrite generated project files"
     )
-    init.add_argument(
-        "--global-vars",
-        dest="global_vars_path",
-        type=Path,
-        metavar="PATH",
-        help="enable AVD global vars from PATH",
-    )
     init.set_defaults(func=init_project)
 
     def add_inventory(command: argparse.ArgumentParser) -> None:
@@ -276,6 +402,7 @@ def parser() -> argparse.ArgumentParser:
         command.add_argument(
             "--active", action="store_true", help="use the active virtual environment"
         )
+        command.add_argument("--vault-id", help="Ansible vault identity")
 
     build = commands.add_parser("build", help="build device configurations")
     add_inventory(build)
@@ -283,14 +410,10 @@ def parser() -> argparse.ArgumentParser:
         "--sanitize", action="store_true", help="hide passwords in generated configs"
     )
     build.add_argument(
-        "--avd-version", help="AVD version for a build without an initialized project"
+        "--digital-twin", action="store_true", help="build digital-twin artifacts"
     )
     build.add_argument(
-        "--global-vars",
-        dest="global_vars_path",
-        type=Path,
-        metavar="PATH",
-        help="enable AVD global vars from PATH for a standalone build",
+        "--avd-version", help="AVD version for a build without an initialized project"
     )
     build.set_defaults(func=build_project)
 
@@ -298,10 +421,20 @@ def parser() -> argparse.ArgumentParser:
         "cv-deploy", help="deploy configurations to CloudVision"
     )
     add_inventory(deploy)
+    deploy.add_argument(
+        "--digital-twin", action="store_true", help="deploy digital-twin artifacts"
+    )
     deploy.set_defaults(func=cv_deploy)
+
+    eapi = commands.add_parser("eapi-deploy", help="deploy configurations over eAPI")
+    add_inventory(eapi)
+    eapi.set_defaults(func=eapi_deploy)
 
     validation = commands.add_parser("anta", help="run ANTA validation")
     add_inventory(validation)
+    validation.add_argument(
+        "--digital-twin", action="store_true", help="validate the digital twin"
+    )
     validation.set_defaults(func=anta)
 
     return command_parser
