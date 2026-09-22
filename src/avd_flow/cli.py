@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+from contextlib import chdir, nullcontext
 from importlib.resources import as_file, files
 from pathlib import Path
 from typing import Any
@@ -96,14 +97,10 @@ def declared_pyavd_version(root: Path) -> str:
     raise CliError(f"{root / 'pyproject.toml'} must pin pyavd with ==")
 
 
-def prepare_project(
-    inventory_path: Path, root: Path | None = None, active: bool = False
+def prepare_runtime(
+    root: Path | None = None, active: bool = False, sync: bool = True
 ) -> tuple[Path, str, bool, bool, str]:
     root = root or Path.cwd()
-    inventory = root / inventory_path
-    if not inventory.is_file():
-        raise CliError(f"{inventory_path} not found. {INVENTORY_MESSAGE}")
-
     uv = shutil.which("uv")
     if uv is None:
         raise CliError(
@@ -124,7 +121,7 @@ def prepare_project(
 
     active_argument = ["--active"] if active else []
     no_sync_argument = ["--no-sync"] if prepared else []
-    if not prepared:
+    if not prepared and sync:
         run([uv, "sync", *active_argument], root, active=active)
     installed_version = run(
         [
@@ -191,6 +188,20 @@ def prepare_project(
             )
 
     return root, uv, active, prepared, installed_version
+
+
+def prepare_project(
+    inventory_path: Path, root: Path | None = None, active: bool = False
+) -> tuple[Path, str, bool, bool, str]:
+    root = root or Path.cwd()
+    inventory = root / inventory_path
+    if not inventory.is_file():
+        raise CliError(f"{inventory_path} not found. {INVENTORY_MESSAGE}")
+    return prepare_runtime(root, active)
+
+
+def prepare(active: bool = False, no_sync: bool = False) -> None:
+    prepare_runtime(active=active, sync=not no_sync)
 
 
 def verify_prepared_collection(
@@ -377,18 +388,30 @@ def anta(
 
 def parser() -> argparse.ArgumentParser:
     command_parser = argparse.ArgumentParser(prog="avd-flow")
+    command_parser.add_argument(
+        "-C", "--directory", type=Path, help="run as if started in this directory"
+    )
     commands = command_parser.add_subparsers()
     command_parser.set_defaults(func=command_parser.print_help)
 
     init = commands.add_parser("init", help="create an AVD project")
     init.add_argument(
-        "path", nargs="?", type=Path, default=Path.cwd(), help="project directory"
+        "path", nargs="?", type=Path, default=None, help="project directory"
     )
     init.add_argument("--avd-version", required=True, help="AVD version to install")
     init.add_argument(
         "--force", action="store_true", help="overwrite generated project files"
     )
     init.set_defaults(func=init_project)
+
+    setup = commands.add_parser("prepare", help="prepare project dependencies")
+    setup.add_argument(
+        "--active", action="store_true", help="use the active virtual environment"
+    )
+    setup.add_argument(
+        "--no-sync", action="store_true", help="install collections without syncing"
+    )
+    setup.set_defaults(func=prepare)
 
     def add_inventory(command: argparse.ArgumentParser) -> None:
         command.add_argument(
@@ -443,8 +466,12 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> None:
     try:
         arguments = vars(parser().parse_args(argv))
+        directory = arguments.pop("directory")
         function = arguments.pop("func")
-        function(**arguments)
+        if directory is not None and not directory.is_dir():
+            raise CliError(f"directory not found: {directory}")
+        with chdir(directory) if directory is not None else nullcontext():
+            function(**arguments)
     except CliError as error:
         print(f"error: {error}", file=sys.stderr)
         raise SystemExit(1) from error

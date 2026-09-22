@@ -34,6 +34,11 @@ cd my-fabric
 avd-flow build
 ```
 
+From a parent directory, use `avd-flow -C my-fabric build`. Run
+`avd-flow prepare` to install project dependencies and collections without
+building; `--no-sync` installs only collections into an environment that was
+already synchronized with standard Python tooling.
+
 Use `avd-flow build --sanitize` to hide passwords in generated configurations,
 `avd-flow build --digital-twin` to generate digital-twin artifacts, or
 `--inventory PATH` to select a different inventory file.

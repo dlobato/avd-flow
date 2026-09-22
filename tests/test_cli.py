@@ -14,6 +14,7 @@ from avd_flow.cli import (
     cv_deploy,
     eapi_deploy,
     main,
+    prepare,
     run,
 )
 
@@ -297,6 +298,48 @@ class BuildTest(unittest.TestCase):
             self.assertFalse(
                 any(call.args[0][1] == "sync" for call in run.call_args_list)
             )
+
+
+class PrepareTest(unittest.TestCase):
+    def test_installs_collections_without_syncing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "pyproject.toml").write_text(
+                '[project]\ndependencies = ["pyavd[ansible]==6.3.0"]\n'
+            )
+            results = [
+                CompletedProcess([], 0, "6.3.0\n"),
+                CompletedProcess([], 0, ""),
+            ]
+
+            with (
+                patch("avd_flow.cli.Path.cwd", return_value=root),
+                patch("avd_flow.cli.shutil.which", return_value="/usr/bin/uv"),
+                patch("avd_flow.cli.subprocess.run", side_effect=results) as run,
+            ):
+                prepare(no_sync=True)
+
+            self.assertEqual(2, run.call_count)
+            self.assertFalse(
+                any(call.args[0][1] == "sync" for call in run.call_args_list)
+            )
+
+
+class DirectoryTest(unittest.TestCase):
+    def test_runs_from_selected_directory_and_restores_cwd(self) -> None:
+        original = Path.cwd()
+        with tempfile.TemporaryDirectory() as directory:
+            selected = Path(directory)
+            visited: list[Path] = []
+
+            with patch(
+                "avd_flow.cli.build_project",
+                side_effect=lambda **kwargs: visited.append(Path.cwd()),
+            ):
+                main(["-C", str(selected), "build"])
+
+        self.assertEqual([selected], visited)
+        self.assertEqual(original, Path.cwd())
 
 
 class DeployTest(unittest.TestCase):
