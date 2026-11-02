@@ -90,12 +90,12 @@ def run(
 
 
 def prepare_project(
-    inventory_path: Path, root: Path | None = None, active: bool = False
+    inventory_paths: list[Path], root: Path | None = None, active: bool = False
 ) -> tuple[Path, str]:
     root = root or Path.cwd()
-    inventory = root / inventory_path
-    if not inventory.is_file():
-        raise CliError(f"{inventory_path} not found. {INVENTORY_MESSAGE}")
+    for inventory_path in inventory_paths:
+        if not (root / inventory_path).is_file():
+            raise CliError(f"{inventory_path} not found. {INVENTORY_MESSAGE}")
 
     uv = shutil.which("uv")
     if uv is None:
@@ -157,14 +157,16 @@ def prepare_project(
 
 def run_playbook(
     playbook: str,
-    inventory_path: Path,
+    inventory_paths: list[Path] | None = None,
     environment_overrides: dict[str, str] | None = None,
     root: Path | None = None,
     env_file: Path | None = None,
     working_directory: Path | None = None,
     active: bool = False,
+    extra_vars: list[str] | None = None,
 ) -> None:
-    root, uv = prepare_project(inventory_path, root, active)
+    inventory_paths = inventory_paths or [Path("inventory/inventory.yml")]
+    root, uv = prepare_project(inventory_paths, root, active)
     working_directory = working_directory or root
     env_file_argument = str(env_file) if env_file is not None else ".env"
     env_file = env_file or root / ".env"
@@ -182,8 +184,8 @@ def run_playbook(
             *(["--env-file", env_file_argument] if env_file.is_file() else []),
             "ansible-playbook",
             str(root / playbook) if standalone else playbook,
-            "--inventory",
-            str(inventory_path),
+            *[arg for path in inventory_paths for arg in ("--inventory", str(path))],
+            *[arg for value in extra_vars or [] for arg in ("--extra-vars", value)],
         ],
         working_directory,
         active=active,
@@ -192,23 +194,31 @@ def run_playbook(
 
 
 def build_project(
-    inventory_path: Path = Path("inventory/inventory.yml"),
+    inventory_paths: list[Path] | None = None,
     sanitize: bool = False,
     avd_version: str | None = None,
     global_vars_path: Path | None = None,
     active: bool = False,
+    extra_vars: list[str] | None = None,
 ) -> None:
     environment = {"SANITIZE": "true"} if sanitize else None
     if avd_version is None:
         if global_vars_path is not None:
             raise CliError("--global-vars requires --avd-version")
         run_playbook(
-            "playbooks/fabric-build.yml", inventory_path, environment, active=active
+            "playbooks/fabric-build.yml",
+            inventory_paths,
+            environment,
+            active=active,
+            extra_vars=extra_vars,
         )
         return
 
     source_root = Path.cwd()
-    inventory_path = (source_root / inventory_path).resolve()
+    inventory_paths = [
+        (source_root / path).resolve()
+        for path in inventory_paths or [Path("inventory/inventory.yml")]
+    ]
     global_vars_path = (
         (source_root / global_vars_path).resolve()
         if global_vars_path is not None
@@ -219,27 +229,28 @@ def build_project(
         init_project(avd_version, root, global_vars_path, quiet=True)
         run_playbook(
             "playbooks/fabric-build.yml",
-            inventory_path,
+            inventory_paths,
             environment,
             root,
             source_root / ".env",
             source_root,
             active=active,
+            extra_vars=extra_vars,
         )
 
 
 def cv_deploy(
-    inventory_path: Path = Path("inventory/inventory.yml"),
+    inventory_paths: list[Path] | None = None,
     active: bool = False,
 ) -> None:
-    run_playbook("playbooks/cv_deploy.yml", inventory_path, active=active)
+    run_playbook("playbooks/cv_deploy.yml", inventory_paths, active=active)
 
 
 def anta(
-    inventory_path: Path = Path("inventory/inventory.yml"),
+    inventory_paths: list[Path] | None = None,
     active: bool = False,
 ) -> None:
-    run_playbook("playbooks/anta_runner.yml", inventory_path, active=active)
+    run_playbook("playbooks/anta_runner.yml", inventory_paths, active=active)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -267,11 +278,11 @@ def parser() -> argparse.ArgumentParser:
     def add_inventory(command: argparse.ArgumentParser) -> None:
         command.add_argument(
             "--inventory",
-            dest="inventory_path",
+            dest="inventory_paths",
             type=Path,
-            default=Path("inventory/inventory.yml"),
+            action="append",
             metavar="PATH",
-            help="inventory file",
+            help="inventory file (repeat for multiple sources; default: inventory/inventory.yml)",
         )
         command.add_argument(
             "--active", action="store_true", help="use the active virtual environment"
@@ -281,6 +292,13 @@ def parser() -> argparse.ArgumentParser:
     add_inventory(build)
     build.add_argument(
         "--sanitize", action="store_true", help="hide passwords in generated configs"
+    )
+    build.add_argument(
+        "--extra-vars",
+        "-e",
+        action="append",
+        metavar="VALUE",
+        help="Ansible extra variables or @file (repeat as needed)",
     )
     build.add_argument(
         "--avd-version", help="AVD version for a build without an initialized project"

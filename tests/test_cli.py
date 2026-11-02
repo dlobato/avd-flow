@@ -9,11 +9,13 @@ from unittest.mock import call, patch
 
 from avd_flow.cli import (
     INVENTORY_MESSAGE,
+    CliError,
     anta,
     build_project,
     cv_deploy,
     init_project,
     main,
+    prepare_project,
     run,
 )
 
@@ -74,6 +76,57 @@ class InitTest(unittest.TestCase):
 
 
 class BuildTest(unittest.TestCase):
+    def test_builds_multiple_sources_with_external_variables(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = [Path("site/inventory.yml"), Path("site/fabric-a/inventory.yml")]
+            for source in sources:
+                (root / source).parent.mkdir(parents=True, exist_ok=True)
+                (root / source).touch()
+            with (
+                patch("avd_flow.cli.Path.cwd", return_value=root),
+                patch("avd_flow.cli.shutil.which", return_value="/usr/bin/uv"),
+                patch("avd_flow.cli.subprocess.run") as subprocess_run,
+            ):
+                subprocess_run.return_value.stdout = "6.3.0\n"
+                main(
+                    [
+                        "build",
+                        "--inventory",
+                        str(sources[0]),
+                        "--inventory",
+                        str(sources[1]),
+                        "--extra-vars",
+                        "@../credentials.yml",
+                        "-e",
+                        "@../services.yml",
+                    ]
+                )
+            self.assertEqual(
+                [
+                    "--inventory",
+                    str(sources[0]),
+                    "--inventory",
+                    str(sources[1]),
+                    "--extra-vars",
+                    "@../credentials.yml",
+                    "--extra-vars",
+                    "@../services.yml",
+                ],
+                subprocess_run.call_args_list[-1].args[0][4:],
+            )
+
+    def test_rejects_missing_source_before_runtime_preparation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "inventory.yml").touch()
+            with (
+                patch("avd_flow.cli.subprocess.run") as subprocess_run,
+                self.assertRaisesRegex(CliError, "missing.yml not found"),
+            ):
+                prepare_project([Path("inventory.yml"), Path("missing.yml")], root)
+            subprocess_run.assert_not_called()
+
     def test_ignores_an_unrequested_active_environment(self) -> None:
         root = Path("/project")
         with (
@@ -128,6 +181,10 @@ class BuildTest(unittest.TestCase):
                 "/another/project/.venv",
                 subprocess_run.call_args_list[-1].kwargs["env"]["VIRTUAL_ENV"],
             )
+            self.assertEqual(
+                ["--inventory", "inventory/inventory.yml"],
+                subprocess_run.call_args_list[-1].args[0][-2:],
+            )
 
     def test_builds_with_required_collections(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -154,7 +211,7 @@ class BuildTest(unittest.TestCase):
                 ),
             ):
                 build_project(
-                    inventory_path=Path("inventory/inventory.yml"), sanitize=True
+                    inventory_paths=[Path("inventory/inventory.yml")], sanitize=True
                 )
 
             self.assertEqual(
@@ -234,6 +291,9 @@ class BuildTest(unittest.TestCase):
             root = Path(directory)
             inventory = root / "inventory.yml"
             inventory.touch()
+            building = root / "fabric-a" / "inventory.yml"
+            building.parent.mkdir()
+            building.touch()
             (root / ".env").write_text("BUILD_OUTPUT_DIR=output\n")
             results = [
                 CompletedProcess([], 0, ""),
@@ -248,7 +308,19 @@ class BuildTest(unittest.TestCase):
                 patch("avd_flow.cli.shutil.which", return_value="/usr/bin/uv"),
                 patch("avd_flow.cli.subprocess.run", side_effect=results) as run,
             ):
-                build_project(inventory_path=Path("inventory.yml"), avd_version="6.3.0")
+                main(
+                    [
+                        "build",
+                        "--avd-version",
+                        "6.3.0",
+                        "--inventory",
+                        "inventory.yml",
+                        "--inventory",
+                        "fabric-a/inventory.yml",
+                        "-e",
+                        "@services.yml",
+                    ]
+                )
 
             build = run.call_args_list[-1]
             self.assertEqual(root, build.kwargs["cwd"])
@@ -256,7 +328,17 @@ class BuildTest(unittest.TestCase):
                 str(root / ".env"),
                 build.args[0][build.args[0].index("--env-file") + 1],
             )
-            self.assertEqual(str(inventory.resolve()), build.args[0][-1])
+            self.assertEqual(
+                [
+                    "--inventory",
+                    str(inventory.resolve()),
+                    "--inventory",
+                    str(building.resolve()),
+                    "--extra-vars",
+                    "@services.yml",
+                ],
+                build.args[0][-6:],
+            )
             self.assertIn("--project", build.args[0])
             self.assertNotEqual(
                 root / "ansible.cfg", Path(build.kwargs["env"]["ANSIBLE_CONFIG"])
@@ -268,10 +350,10 @@ class DeployTest(unittest.TestCase):
     def test_runs_cv_deploy_playbook(self) -> None:
         inventory = Path("inventory/inventory.yml")
         with patch("avd_flow.cli.run_playbook") as run_playbook:
-            cv_deploy(inventory)
+            cv_deploy([inventory])
 
         run_playbook.assert_called_once_with(
-            "playbooks/cv_deploy.yml", inventory, active=False
+            "playbooks/cv_deploy.yml", [inventory], active=False
         )
 
 
@@ -279,10 +361,10 @@ class AntaTest(unittest.TestCase):
     def test_runs_anta_playbook(self) -> None:
         inventory = Path("inventory/inventory.yml")
         with patch("avd_flow.cli.run_playbook") as run_playbook:
-            anta(inventory)
+            anta([inventory])
 
         run_playbook.assert_called_once_with(
-            "playbooks/anta_runner.yml", inventory, active=False
+            "playbooks/anta_runner.yml", [inventory], active=False
         )
 
 

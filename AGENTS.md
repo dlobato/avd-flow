@@ -33,3 +33,5 @@ History uses short, imperative commit subjects, for example `Add ANTA validation
 ## Security & Configuration
 
 Never commit `.env`, credentials, tokens, generated secrets, or customer inventories. Preserve environment-variable precedence over `.env` file values. Treat deployment and hardware-validation commands as externally mutating operations.
+
+Keep customer names, project details, source revisions, and private test evidence out of public files, commit messages, and pull requests. Use generic examples.
