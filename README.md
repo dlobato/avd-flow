@@ -53,6 +53,28 @@ This uses the packaged project resources in a temporary directory. The inventory
 its variable files, `.env`, and generated output remain in the current project.
 Use `--global-vars PATH` when a standalone build needs AVD global variables.
 
+For a project with multiple inventory sources, repeat `--inventory` in the required
+order. The command loads every source in one Ansible invocation. Use `--extra-vars`
+or `-e` to pass Ansible variables. Repeat it for separate files or values.
+Ansible applies its normal variable precedence.
+
+For a build with shared and fabric inventories, supply each source in order:
+
+```shell
+BUILD_OUTPUT_DIR="$PWD/output" avd-flow build --avd-version 6.3.0 \
+  --inventory site/inventory.yml \
+  --inventory site/fabric-a/inventory.yml \
+  --inventory site/fabric-b/inventory.yml \
+  --extra-vars @../credentials.yml \
+  --extra-vars @../services.yml
+```
+
+Keep credentials outside the project. Adjust the paths for your inventories.
+Set `BUILD_OUTPUT_DIR` when all hosts need one shared output and allocation directory.
+Without this value, Ansible uses each host's inventory directory.
+Use separate output directories for independent builds.
+The standalone command keeps avd-flow resources outside the existing project.
+
 Deploy generated configurations to CloudVision:
 
 ```shell
